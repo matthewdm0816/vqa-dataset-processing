@@ -1,0 +1,11 @@
+processed*/
+annotation/
+features/
+img/
+*.pkl
+*.zip
+*.pkl.bak
+question/
+test/
+train/
+val/
