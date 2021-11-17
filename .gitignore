@@ -11,3 +11,4 @@ question/
 test/
 train/
 val/
+clip_feature_for_knn.npy
