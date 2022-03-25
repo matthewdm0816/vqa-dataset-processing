@@ -10,24 +10,49 @@ import glob
 import logging
 import os
 import sys
-from typing import Optional, Iterable, Union, List
-
+from typing import Optional, Iterable, Union, List, Tuple
+import colorama
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
+from argparse import ArgumentParser
+from pathlib import Path
 
+parser = ArgumentParser(description="Calculate CLIP features")
+parser.add_argument("--dataset_type", type=str, default="vqa2")
+parser.add_argument("--save_path", type=str, default="clip_feature")
+parser.add_argument("--model_type", type=str, default="RN50x16")
+parser.add_argument("--rng_start", type=int, default=0)
+parser.add_argument("--rng_end", type=int, default=100_000_000_000)
+
+args = parser.parse_args()
+assert args.dataset_type in ["vqa2", "gqa"], f"{args.dataset_type} is not supported"
+
+ic(args)
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+log_format = (
+    colorama.Fore.MAGENTA
+    + "[%(asctime)s %(name)s %(levelname)s] "
+    + colorama.Fore.WHITE
+    + "%(message)s"
+)
+logging.basicConfig(
+    format=log_format, level=logging.INFO, datefmt="%I:%M:%S"
+)
 
 # %%
 ic(clip.available_models())
-device = torch.device("cuda:3")
+device = torch.device("cuda:0")
 
 
 # %%
-model, preprocess = clip.load("RN50x16", device=device)
+model, preprocess = clip.load(args.model_type, device=device)
 
 
 # %%
 def iterchunk(iterator, chunksize: int):
     from itertools import islice
+
     passed = 0
     while True:
         chunk_iter = islice(iterator, passed, chunksize + passed)
@@ -38,8 +63,12 @@ def iterchunk(iterator, chunksize: int):
         yield islice(iterator, passed, chunksize + passed)
         passed += chunksize
 
+
 # %%
 import datasets
+
+GB = 1024 ** 3
+datasets.config.IN_MEMORY_MAX_SIZE = 100 * GB
 
 
 class ImagePool:
@@ -52,14 +81,14 @@ class ImagePool:
         filename = os.path.basename(image_path)
         image_id = filename.split("_")[-1]
         image_id, _ = image_id.split(".")
-        return int(image_id)
+        return image_id
 
     def __init__(
         self,
         path: Union[str, List[str]],
         preprocess,
         init: bool = False,
-        limit: Optional[int] = None,
+        rng: Optional[Tuple[int]] = None,
         from_dataset: Optional[datasets.Dataset] = None,
     ):
         self.image_dict = dict()
@@ -74,9 +103,13 @@ class ImagePool:
         self.preprocess = preprocess
 
         if init:
-            self.init(limit=limit)
+            self.init(rng=rng)
 
-    def init(self, num_workers: int = 32, limit: Optional[int] = None):
+    def init(
+        self,
+        num_workers: int = 32,
+        rng: Optional[Tuple[int]] = None,
+    ):
         if num_workers < 1:
             for filename in tqdm(glob.glob(self.path)):
                 image_id = self._getid(filename)
@@ -90,9 +123,11 @@ class ImagePool:
             executor = ThreadPoolExecutor(max_workers=num_workers)
             futures = []
             filelist = sorted(sum([glob.glob(path) for path in self.path], start=[]))
-            filelist = filelist[:limit] if limit is not None else filelist
+            # if given a range, partially encode
+            filelist = filelist[rng[0] : rng[1]] if rng is not None else filelist
             total_files = len(filelist)
             pbar = tqdm(total=total_files)
+            logging.info(f"Total files: {total_files}")
 
             for filename in filelist:
                 future = executor.submit(self._load_single_image_mt, filename)
@@ -179,20 +214,36 @@ class ImagePool:
 
 # %%
 import gc
+
 logging.info("Loading and Preprocessing Images and Loading Annotations...")
-dataset=None
-for path in [
+VQA2PATHS = [
     "~/data/vqav2/img/test/test2015/*.jpg",
     "~/data/vqav2/img/val/val2014/*.jpg",
     "~/data/vqav2/img/train/train2014/*.jpg",
-]:
+]
+GQAPATHS = [
+    "~/data/vinvl_gqa/images/images/*.jpg",
+]
+
+if args.dataset_type == "vqa2":
+    PATHS = VQA2PATHS
+elif args.dataset_type == "gqa":
+    PATHS = GQAPATHS
+else:
+    raise ValueError("Unknown dataset type")
+
+try:
+    logging.info("Loading dataset from disk...")
+    dataset = datasets.load_from_disk(args.save_path)
+except Exception:
+    logging.info("Loading dataset from disk failed, loading from scratch")
+    dataset = None
+for path in PATHS:
+    logging.info(f"Beginning Reading and Preprocessing Images, Range [{args.rng_start} ~~ {args.rng_end})...")
     image_pool = ImagePool(
-        path=path,
-        preprocess=preprocess,
-        init=True,
-        limit=None,
-        from_dataset=dataset
+        path=path, preprocess=preprocess, init=True, rng=(args.rng_start, args.rng_end), from_dataset=dataset
     )
+    logging.info(f"Beginning Encoding Images, Range [{args.rng_start} ~~ {args.rng_end})...")
     image_pool.encode_idxs(
         model, device, list(image_pool.image_dict.keys()), chunksize=256
     )
@@ -205,16 +256,13 @@ for path in [
 
 # %%
 # Reload Dataset
-dataset.save_to_disk('clip_feature')
+dataset.save_to_disk(args.save_path)
 
-# %%
-# Clean Ups
-image_pool.image_feat_dict = {}
-image_pool.image_grid_feat_dict = {}
-import gc
+# # %%
+# # Clean Ups
+# image_pool.image_feat_dict = {}
+# image_pool.image_grid_feat_dict = {}
+# import gc
 
-gc.collect()
-torch.cuda.empty_cache()
-
-
-
+# gc.collect()
+# torch.cuda.empty_cache()

@@ -1,0 +1,3 @@
+CUDA_VISIBLE_DEVICES=7 python clip_feature_calc.py --dataset_type=gqa --save_path=../vinvl_gqa/clip_feature --rng_start=0 --rng_end=50000
+CUDA_VISIBLE_DEVICES=7 python clip_feature_calc.py --dataset_type=gqa --save_path=../vinvl_gqa/clip_feature --rng_start=50000 --rng_end=100000
+CUDA_VISIBLE_DEVICES=7 python clip_feature_calc.py --dataset_type=gqa --save_path=../vinvl_gqa/clip_feature --rng_start=100000
